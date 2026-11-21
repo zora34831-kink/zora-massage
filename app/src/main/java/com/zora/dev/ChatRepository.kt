@@ -10,6 +10,7 @@ import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.tasks.await
 
 data class ZoraMessage(
     val id: String = "",
@@ -36,20 +37,27 @@ class ChatRepository {
 
     fun conversationId(otherUid: String): String {
         val myUid = currentUid()
-        require(otherUid.isNotBlank() && otherUid != myUid)
 
-        return listOf(myUid, otherUid).sorted().joinToString("_")
+        require(otherUid.isNotBlank() && otherUid != myUid) {
+            "Pengguna tidak valid."
+        }
+
+        return listOf(myUid, otherUid)
+            .sorted()
+            .joinToString("_")
     }
 
-    suspend fun createUserProfile(
-        name: String
-    ) {
+    suspend fun createUserProfile(name: String) {
         val firebaseUser = auth.currentUser
             ?: throw IllegalStateException("Belum login.")
 
+        val cleanName = name.trim().ifBlank {
+            firebaseUser.email?.substringBefore("@") ?: "Pengguna"
+        }
+
         val data = mapOf(
             "uid" to firebaseUser.uid,
-            "name" to name,
+            "name" to cleanName,
             "email" to (firebaseUser.email ?: ""),
             "photoUrl" to (firebaseUser.photoUrl?.toString() ?: ""),
             "updatedAt" to FieldValue.serverTimestamp()
@@ -58,14 +66,15 @@ class ChatRepository {
         db.collection("users")
             .document(firebaseUser.uid)
             .set(data, SetOptions.merge())
-            .awaitResult()
+            .await()
     }
 
-    suspend fun startConversation(
-        otherUid: String
-    ): String {
+    suspend fun startConversation(otherUid: String): String {
         val myUid = currentUid()
-        require(otherUid.isNotBlank() && otherUid != myUid)
+
+        require(otherUid.isNotBlank() && otherUid != myUid) {
+            "Pengguna tidak valid."
+        }
 
         val id = conversationId(otherUid)
 
@@ -77,7 +86,7 @@ class ChatRepository {
         db.collection("conversations")
             .document(id)
             .set(data, SetOptions.merge())
-            .awaitResult()
+            .await()
 
         return id
     }
@@ -100,18 +109,18 @@ class ChatRepository {
         val conversation = db.collection("conversations")
             .document(conversationId)
 
-        val message = mapOf(
+        val messageRef = conversation
+            .collection("messages")
+            .document()
+
+        val messageData = mapOf(
             "senderId" to uid,
             "text" to cleanText,
             "createdAt" to FieldValue.serverTimestamp()
         )
 
         db.runBatch { batch ->
-            val messageRef = conversation
-                .collection("messages")
-                .document()
-
-            batch.set(messageRef, message)
+            batch.set(messageRef, messageData)
 
             batch.update(
                 conversation,
@@ -121,7 +130,7 @@ class ChatRepository {
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             )
-        }.awaitResult()
+        }.await()
     }
 
     fun observeMessages(
@@ -172,18 +181,24 @@ class ChatRepository {
                     }
 
                     val conversations =
-                        snapshot?.documents.orEmpty().map { doc ->
-                            ZoraConversation(
-                                id = doc.id,
-                                participants = doc.get("participants")
-                                    as? List<String> ?: emptyList(),
-                                lastMessage = doc.getString("lastMessage") ?: ""
-                            )
-                        }.sortedByDescending { conversation ->
-                            snapshot?.documents
-                                ?.firstOrNull { it.id == conversation.id }
-                                ?.getTimestamp("updatedAt")
-                        }
+                        snapshot?.documents.orEmpty()
+                            .map { doc ->
+                                ZoraConversation(
+                                    id = doc.id,
+                                    participants = doc.get("participants")
+                                        as? List<String> ?: emptyList(),
+                                    lastMessage = doc.getString(
+                                        "lastMessage"
+                                    ) ?: ""
+                                )
+                            }
+                            .sortedByDescending { conversation ->
+                                snapshot?.documents
+                                    ?.firstOrNull {
+                                        it.id == conversation.id
+                                    }
+                                    ?.getTimestamp("updatedAt")
+                            }
 
                     trySend(conversations)
                 }
@@ -192,8 +207,4 @@ class ChatRepository {
                 listener.remove()
             }
         }
-
-    private suspend fun com.google.android.gms.tasks.Task<*>.awaitResult() {
-        kotlinx.coroutines.tasks.await()
-    }
 }

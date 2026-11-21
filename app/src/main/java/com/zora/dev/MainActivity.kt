@@ -12,7 +12,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -82,13 +81,13 @@ fun AuthScreen() {
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            text = "ZORA",
+            "ZORA",
             style = MaterialTheme.typography.displayMedium,
             color = ZoraInk
         )
 
         Text(
-            text = "MASSAGE",
+            "MASSAGE",
             style = MaterialTheme.typography.headlineMedium,
             color = ZoraInk
         )
@@ -96,10 +95,8 @@ fun AuthScreen() {
         Spacer(Modifier.height(8.dp))
 
         Text(
-            text = if (isRegister)
-                "Buat akun baru kamu."
-            else
-                "Selamat datang kembali.",
+            if (isRegister) "Buat akun baru kamu."
+            else "Selamat datang kembali.",
             color = ZoraMuted
         )
 
@@ -113,7 +110,6 @@ fun AuthScreen() {
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
-
             Spacer(Modifier.height(12.dp))
         }
 
@@ -143,7 +139,7 @@ fun AuthScreen() {
 
         if (message.isNotBlank()) {
             Text(
-                text = message,
+                message,
                 color = MaterialTheme.colorScheme.error
             )
             Spacer(Modifier.height(10.dp))
@@ -156,17 +152,21 @@ fun AuthScreen() {
                     message = ""
 
                     try {
+                        if (email.isBlank() || password.isBlank()) {
+                            throw IllegalArgumentException(
+                                "Email dan password wajib diisi."
+                            )
+                        }
+
                         if (isRegister) {
-                            repository.register(
-                                name,
-                                email,
-                                password
-                            )
+                            if (name.isBlank()) {
+                                throw IllegalArgumentException(
+                                    "Nama wajib diisi."
+                                )
+                            }
+                            repository.register(name, email, password)
                         } else {
-                            repository.login(
-                                email,
-                                password
-                            )
+                            repository.login(email, password)
                         }
                     } catch (e: Exception) {
                         message = e.localizedMessage
@@ -187,10 +187,7 @@ fun AuthScreen() {
                     color = ZoraInk
                 )
             } else {
-                Text(
-                    if (isRegister) "DAFTAR AKUN"
-                    else "MASUK"
-                )
+                Text(if (isRegister) "DAFTAR AKUN" else "MASUK")
             }
         }
 
@@ -202,10 +199,8 @@ fun AuthScreen() {
             modifier = Modifier.fillMaxWidth()
         ) {
             Text(
-                if (isRegister)
-                    "Sudah punya akun? Masuk"
-                else
-                    "Belum punya akun? Daftar"
+                if (isRegister) "Sudah punya akun? Masuk"
+                else "Belum punya akun? Daftar"
             )
         }
 
@@ -214,6 +209,11 @@ fun AuthScreen() {
                 onClick = {
                     scope.launch {
                         try {
+                            if (email.isBlank()) {
+                                throw IllegalArgumentException(
+                                    "Masukkan email terlebih dahulu."
+                                )
+                            }
                             repository.resetPassword(email)
                             message = "Email reset password telah dikirim."
                         } catch (e: Exception) {
@@ -234,20 +234,32 @@ fun AuthScreen() {
 @Composable
 fun MainDashboard(onLogout: () -> Unit) {
     val user = FirebaseAuth.getInstance().currentUser
-
-    var selectedTab by remember { mutableIntStateOf(0) }
-    var isOwner by remember { mutableStateOf(false) }
-
     val ownerRepository = remember { OwnerRepository() }
 
+    var selectedTab by remember { mutableStateOf("Chat") }
+    var isOwner by remember { mutableStateOf(false) }
+    var ownerChecked by remember { mutableStateOf(false) }
+    var ownerError by remember { mutableStateOf("") }
+
     LaunchedEffect(user?.uid) {
+        isOwner = false
+        ownerChecked = false
+        ownerError = ""
+
         if (user != null) {
             try {
+                // Memastikan klaim owner sudah dipasang oleh backend.
                 ownerRepository.bootstrapOwner()
+
+                // Memaksa Firebase mengambil token terbaru.
                 val token = user.getIdToken(true).await()
                 isOwner = token.claims["owner"] == true
-            } catch (_: Exception) {
+            } catch (e: Exception) {
                 isOwner = false
+                ownerError = e.localizedMessage
+                    ?: "Pengecekan Owner gagal."
+            } finally {
+                ownerChecked = true
             }
         }
     }
@@ -259,6 +271,22 @@ fun MainDashboard(onLogout: () -> Unit) {
         add("Panggilan")
         add("Profil")
         if (isOwner) add("Owner")
+    }
+
+    if (selectedTab !in tabs) {
+        selectedTab = "Chat"
+    }
+
+    val icons = listOf(
+        Icons.Default.Chat,
+        Icons.Default.Circle,
+        Icons.Default.Groups,
+        Icons.Default.Call,
+        Icons.Default.Person
+    ) + if (isOwner) {
+        listOf(Icons.Default.AdminPanelSettings)
+    } else {
+        emptyList()
     }
 
     Scaffold(
@@ -281,7 +309,7 @@ fun MainDashboard(onLogout: () -> Unit) {
                 actions = {
                     IconButton(
                         onClick = {
-                            selectedTab = tabs.indexOf("Profil")
+                            selectedTab = "Profil"
                         }
                     ) {
                         Icon(
@@ -299,29 +327,19 @@ fun MainDashboard(onLogout: () -> Unit) {
             NavigationBar(
                 containerColor = ZoraWhite
             ) {
-                val icons = listOf(
-                    Icons.Default.Chat,
-                    Icons.Default.Circle,
-                    Icons.Default.Groups,
-                    Icons.Default.Call,
-                    Icons.Default.Person
-                ) + if (isOwner) {
-                    listOf(Icons.Default.AdminPanelSettings)
-                } else {
-                    emptyList()
-                }
-
                 tabs.forEachIndexed { index, tab ->
                     NavigationBarItem(
-                        selected = selectedTab == index,
-                        onClick = { selectedTab = index },
+                        selected = selectedTab == tab,
+                        onClick = { selectedTab = tab },
                         icon = {
                             Icon(
                                 icons[index],
                                 contentDescription = tab
                             )
                         },
-                        label = { Text(tab) }
+                        label = {
+                            Text(tab)
+                        }
                     )
                 }
             }
@@ -332,16 +350,27 @@ fun MainDashboard(onLogout: () -> Unit) {
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            when (tabs.getOrNull(selectedTab)) {
+            when (selectedTab) {
                 "Chat" -> ChatScreen()
                 "Status" -> StatusScreen()
                 "Grup" -> GroupScreen()
                 "Panggilan" -> CallScreen()
                 "Profil" -> ProfileScreen(onLogout)
                 "Owner" -> {
-                    if (isOwner) OwnerScreen()
-                    else Text("Akses ditolak.")
+                    if (isOwner) {
+                        OwnerScreen(
+                            onBack = {
+                                selectedTab = "Chat"
+                            }
+                        )
+                    } else {
+                        Text("Akses ditolak.")
+                    }
                 }
+            }
+
+            if (!ownerChecked && user != null) {
+                // Menu Owner ditampilkan setelah pemeriksaan selesai.
             }
         }
     }

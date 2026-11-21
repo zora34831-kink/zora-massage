@@ -1,210 +1,186 @@
 
 package com.zora.dev
 
-import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.FieldValue
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Query
-import com.google.firebase.firestore.SetOptions
+import com.google.firebase.firestore.*
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.tasks.await
 
+data class ZoraUser(
+    val uid: String = "",
+    val name: String = "",
+    val email: String = "",
+    val verified: Boolean = false
+)
+
 data class ZoraMessage(
     val id: String = "",
     val senderId: String = "",
     val text: String = "",
-    val createdAt: Timestamp? = null
+    val createdAt: Long = 0L
 )
 
 data class ZoraConversation(
     val id: String = "",
     val participants: List<String> = emptyList(),
-    val lastMessage: String = ""
+    val lastMessage: String = "",
+    val updatedAt: Long = 0L
 )
 
-class ChatRepository {
+class ChatRepository(
+    private val db: FirebaseFirestore = FirebaseFirestore.getInstance(),
+    private val auth: FirebaseAuth = FirebaseAuth.getInstance()
+) {
+    private val currentUid: String
+        get() = auth.currentUser?.uid
+            ?: throw IllegalStateException("Silakan login terlebih dahulu.")
 
-    private val db = FirebaseFirestore.getInstance()
-    private val auth = FirebaseAuth.getInstance()
-
-    private fun currentUid(): String {
-        return auth.currentUser?.uid
-            ?: throw IllegalStateException("Kamu belum login.")
-    }
-
-    fun conversationId(otherUid: String): String {
-        val myUid = currentUid()
-
-        require(otherUid.isNotBlank() && otherUid != myUid) {
-            "Pengguna tidak valid."
-        }
-
-        return listOf(myUid, otherUid)
-            .sorted()
-            .joinToString("_")
-    }
-
-    suspend fun createUserProfile(name: String) {
-        val firebaseUser = auth.currentUser
-            ?: throw IllegalStateException("Belum login.")
-
-        val cleanName = name.trim().ifBlank {
-            firebaseUser.email?.substringBefore("@") ?: "Pengguna"
-        }
-
-        val data = mapOf(
-            "uid" to firebaseUser.uid,
-            "name" to cleanName,
-            "email" to (firebaseUser.email ?: ""),
-            "photoUrl" to (firebaseUser.photoUrl?.toString() ?: ""),
-            "updatedAt" to FieldValue.serverTimestamp()
-        )
-
-        db.collection("users")
-            .document(firebaseUser.uid)
-            .set(data, SetOptions.merge())
-            .await()
-    }
-
-    suspend fun startConversation(otherUid: String): String {
-        val myUid = currentUid()
-
-        require(otherUid.isNotBlank() && otherUid != myUid) {
-            "Pengguna tidak valid."
-        }
-
-        val id = conversationId(otherUid)
-
-        val data = mapOf(
-            "participants" to listOf(myUid, otherUid).sorted(),
-            "updatedAt" to FieldValue.serverTimestamp()
-        )
-
-        db.collection("conversations")
-            .document(id)
-            .set(data, SetOptions.merge())
-            .await()
-
-        return id
-    }
-
-    suspend fun sendMessage(
-        conversationId: String,
-        text: String
-    ) {
-        val uid = currentUid()
-        val cleanText = text.trim()
-
-        require(cleanText.isNotEmpty()) {
-            "Pesan tidak boleh kosong."
-        }
-
-        require(cleanText.length <= 5000) {
-            "Pesan terlalu panjang."
-        }
-
-        val conversation = db.collection("conversations")
-            .document(conversationId)
-
-        val messageRef = conversation
-            .collection("messages")
-            .document()
-
-        val messageData = mapOf(
-            "senderId" to uid,
-            "text" to cleanText,
-            "createdAt" to FieldValue.serverTimestamp()
-        )
-
-        db.runBatch { batch ->
-            batch.set(messageRef, messageData)
-
-            batch.update(
-                conversation,
-                mapOf(
-                    "lastMessage" to cleanText,
-                    "lastSenderId" to uid,
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-            )
-        }.await()
-    }
-
-    fun observeMessages(
-        conversationId: String
-    ): Flow<List<ZoraMessage>> = callbackFlow {
-
-        val listener = db.collection("conversations")
-            .document(conversationId)
-            .collection("messages")
-            .orderBy("createdAt", Query.Direction.ASCENDING)
-            .limitToLast(100)
+    fun observeUsers(): Flow<List<ZoraUser>> = callbackFlow {
+        val registration = db.collection("users")
             .addSnapshotListener { snapshot, error ->
-
                 if (error != null) {
                     close(error)
                     return@addSnapshotListener
                 }
 
-                val messages = snapshot?.documents.orEmpty().map { doc ->
-                    ZoraMessage(
-                        id = doc.id,
-                        senderId = doc.getString("senderId") ?: "",
-                        text = doc.getString("text") ?: "",
-                        createdAt = doc.getTimestamp("createdAt")
+                val result = snapshot?.documents.orEmpty().mapNotNull { doc ->
+                    val uid = doc.getString("uid") ?: doc.id
+                    if (uid == currentUid) return@mapNotNull null
+
+                    ZoraUser(
+                        uid = uid,
+                        name = doc.getString("name") ?: "Pengguna ZORA",
+                        email = doc.getString("email") ?: "",
+                        verified = doc.getBoolean("verified") ?: false
                     )
                 }
 
-                trySend(messages)
+                trySend(result)
             }
 
-        awaitClose {
-            listener.remove()
+        awaitClose { registration.remove() }
+    }
+
+    suspend fun startConversation(otherUid: String): String {
+        require(otherUid.isNotBlank() && otherUid != currentUid) {
+            "Pengguna tidak valid."
         }
+
+        val participants = listOf(currentUid, otherUid).sorted()
+
+        val existing = db.collection("conversations")
+            .whereArrayContains("participants", currentUid)
+            .get()
+            .await()
+            .documents
+            .firstOrNull { doc ->
+                (doc.get("participants") as? List<*>)
+                    ?.filterIsInstance<String>()
+                    ?.sorted() == participants
+            }
+
+        if (existing != null) return existing.id
+
+        val ref = db.collection("conversations").document()
+
+        ref.set(
+            mapOf(
+                "participants" to participants,
+                "lastMessage" to "",
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+        ).await()
+
+        return ref.id
     }
 
     fun observeConversations(): Flow<List<ZoraConversation>> =
         callbackFlow {
-
-            val uid = currentUid()
-
-            val listener = db.collection("conversations")
-                .whereArrayContains("participants", uid)
+            val registration = db.collection("conversations")
+                .whereArrayContains("participants", currentUid)
                 .addSnapshotListener { snapshot, error ->
-
                     if (error != null) {
                         close(error)
                         return@addSnapshotListener
                     }
 
-                    val conversations =
-                        snapshot?.documents.orEmpty()
-                            .map { doc ->
-                                ZoraConversation(
-                                    id = doc.id,
-                                    participants = doc.get("participants")
-                                        as? List<String> ?: emptyList(),
-                                    lastMessage = doc.getString(
-                                        "lastMessage"
-                                    ) ?: ""
-                                )
-                            }
-                            .sortedByDescending { conversation ->
-                                snapshot?.documents
-                                    ?.firstOrNull {
-                                        it.id == conversation.id
-                                    }
-                                    ?.getTimestamp("updatedAt")
-                            }
+                    val result = snapshot?.documents.orEmpty().map { doc ->
+                        ZoraConversation(
+                            id = doc.id,
+                            participants = doc.get("participants") as? List<String>
+                                ?: emptyList(),
+                            lastMessage = doc.getString("lastMessage") ?: "",
+                            updatedAt = doc.getTimestamp("updatedAt")
+                                ?.toDate()?.time ?: 0L
+                        )
+                    }.sortedByDescending { it.updatedAt }
 
-                    trySend(conversations)
+                    trySend(result)
                 }
 
-            awaitClose {
-                listener.remove()
-            }
+            awaitClose { registration.remove() }
         }
+
+    fun observeMessages(conversationId: String): Flow<List<ZoraMessage>> =
+        callbackFlow {
+            val registration = db.collection("conversations")
+                .document(conversationId)
+                .collection("messages")
+                .orderBy("createdAt", Query.Direction.ASCENDING)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        close(error)
+                        return@addSnapshotListener
+                    }
+
+                    val result = snapshot?.documents.orEmpty().map { doc ->
+                        ZoraMessage(
+                            id = doc.id,
+                            senderId = doc.getString("senderId") ?: "",
+                            text = doc.getString("text") ?: "",
+                            createdAt = doc.getTimestamp("createdAt")
+                                ?.toDate()?.time ?: 0L
+                        )
+                    }
+
+                    trySend(result)
+                }
+
+            awaitClose { registration.remove() }
+        }
+
+    suspend fun sendMessage(
+        conversationId: String,
+        text: String
+    ) {
+        val cleanText = text.trim()
+        require(cleanText.isNotBlank()) { "Pesan tidak boleh kosong." }
+        require(cleanText.length <= 5000) { "Pesan terlalu panjang." }
+
+        val conversation = db.collection("conversations")
+            .document(conversationId)
+
+        val message = conversation.collection("messages").document()
+
+        db.runBatch { batch ->
+            batch.set(
+                message,
+                mapOf(
+                    "senderId" to currentUid,
+                    "text" to cleanText,
+                    "createdAt" to FieldValue.serverTimestamp()
+                )
+            )
+
+            batch.update(
+                conversation,
+                mapOf(
+                    "lastMessage" to cleanText,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            )
+        }.await()
+    }
 }

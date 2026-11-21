@@ -3,16 +3,22 @@ package com.zora.dev
 
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.userProfileChangeRequest
+import com.google.firebase.firestore.FieldValue
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.tasks.await
 
 class AuthRepository(
-    private val auth: FirebaseAuth = FirebaseAuth.getInstance()
+    private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
+    private val db: FirebaseFirestore = FirebaseFirestore.getInstance()
 ) {
     suspend fun login(email: String, password: String) {
         require(email.isNotBlank()) { "Email wajib diisi." }
         require(password.isNotBlank()) { "Password wajib diisi." }
 
-        auth.signInWithEmailAndPassword(email.trim(), password).await()
+        auth.signInWithEmailAndPassword(
+            email.trim(),
+            password
+        ).await()
     }
 
     suspend fun register(
@@ -31,33 +37,32 @@ class AuthRepository(
             password
         ).await()
 
+        val firebaseUser = result.user
+            ?: throw IllegalStateException("Akun gagal dibuat.")
+
         val profile = userProfileChangeRequest {
             displayName = name.trim()
         }
 
-        result.user?.updateProfile(profile)?.await()
+        firebaseUser.updateProfile(profile).await()
 
-        val uid = result.user?.uid
-            ?: throw IllegalStateException("Akun gagal dibuat.")
-
-        com.google.firebase.firestore.FirebaseFirestore
-            .getInstance()
-            .collection("users")
-            .document(uid)
+        db.collection("users")
+            .document(firebaseUser.uid)
             .set(
                 mapOf(
-                    "uid" to uid,
+                    "uid" to firebaseUser.uid,
                     "name" to name.trim(),
                     "email" to email.trim(),
-                    "verified" to false,
-                    "createdAt" to
-                        com.google.firebase.firestore.FieldValue.serverTimestamp()
+                    "createdAt" to FieldValue.serverTimestamp()
                 )
             ).await()
     }
 
     suspend fun resetPassword(email: String) {
-        require(email.isNotBlank()) { "Masukkan email terlebih dahulu." }
+        require(email.isNotBlank()) {
+            "Masukkan email terlebih dahulu."
+        }
+
         auth.sendPasswordResetEmail(email.trim()).await()
     }
 

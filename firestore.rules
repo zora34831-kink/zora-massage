@@ -1,0 +1,132 @@
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function owner() {
+      return signedIn() && request.auth.token.owner == true;
+    }
+
+    function activeUser() {
+      return signedIn() &&
+        (
+          !exists(/databases/$(database)/documents/users/$(request.auth.uid))
+          ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid))
+            .data.suspended != true
+        );
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() &&
+        (request.auth.uid == uid || owner());
+
+      allow create: if signedIn() &&
+        request.auth.uid == uid &&
+        request.resource.data.uid == uid &&
+        !request.resource.data.keys().hasAny([
+          "owner",
+          "verified",
+          "suspended",
+          "suspendUntil",
+          "suspensionType"
+        ]);
+
+      allow update: if signedIn() &&
+        request.auth.uid == uid &&
+        activeUser() &&
+        !request.resource.data.diff(resource.data)
+          .affectedKeys().hasAny([
+            "owner",
+            "verified",
+            "suspended",
+            "suspendUntil",
+            "suspensionType"
+          ]);
+
+      allow delete: if false;
+    }
+
+    match /conversations/{conversationId} {
+      allow read: if activeUser() &&
+        request.auth.uid in resource.data.participants;
+
+      allow create: if activeUser() &&
+        request.resource.data.participants is list &&
+        request.resource.data.participants.size() == 2 &&
+        request.auth.uid in request.resource.data.participants;
+
+      allow update: if activeUser() &&
+        request.auth.uid in resource.data.participants &&
+        request.resource.data.participants == resource.data.participants &&
+        request.resource.data.diff(resource.data)
+          .affectedKeys().hasOnly([
+            "lastMessage",
+            "updatedAt"
+          ]);
+
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        function participant() {
+          return activeUser() &&
+            request.auth.uid in
+              get(/databases/$(database)/documents/conversations/$(conversationId))
+                .data.participants;
+        }
+
+        allow read: if participant();
+
+        allow create: if participant() &&
+          request.resource.data.keys().hasOnly([
+            "senderId",
+            "text",
+            "createdAt"
+          ]) &&
+          request.resource.data.senderId == request.auth.uid &&
+          request.resource.data.text is string &&
+          request.resource.data.text.size() > 0 &&
+          request.resource.data.text.size() <= 5000;
+
+        allow update, delete: if false;
+      }
+    }
+
+    match /groups/{groupId} {
+      allow read: if activeUser() &&
+        request.auth.uid in resource.data.members;
+
+      allow create: if activeUser() &&
+        request.resource.data.ownerId == request.auth.uid &&
+        request.resource.data.members is list &&
+        request.auth.uid in request.resource.data.members &&
+        request.resource.data.name is string &&
+        request.resource.data.name.size() > 0;
+
+      allow update: if activeUser() &&
+        request.auth.uid == resource.data.ownerId &&
+        request.resource.data.ownerId == resource.data.ownerId &&
+        request.resource.data.diff(resource.data)
+          .affectedKeys().hasOnly([
+            "name",
+            "members"
+          ]);
+
+      allow delete: if false;
+    }
+
+    match /adminAudit/{auditId} {
+      allow read: if owner();
+      allow write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

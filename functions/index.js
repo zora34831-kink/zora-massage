@@ -2,20 +2,26 @@
 const admin = require("firebase-admin");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
-const { defineSecret } = require("firebase-functions/params");
 
 admin.initializeApp();
 
 const db = admin.firestore();
-const OWNER_UID = defineSecret("ZORA_OWNER_UID");
+
+const OWNER_UID = process.env.ZORA_OWNER_UID;
 
 function checkOwner(request) {
   if (!request.auth) {
-    throw new HttpsError("unauthenticated", "Login terlebih dahulu.");
+    throw new HttpsError(
+      "unauthenticated",
+      "Login terlebih dahulu."
+    );
   }
 
-  if (request.auth.uid !== OWNER_UID.value()) {
-    throw new HttpsError("permission-denied", "Khusus Owner.");
+  if (!OWNER_UID || request.auth.uid !== OWNER_UID) {
+    throw new HttpsError(
+      "permission-denied",
+      "Khusus Owner."
+    );
   }
 }
 
@@ -29,32 +35,38 @@ async function audit(actor, action, target, details = {}) {
   });
 }
 
-exports.bootstrapOwner = onCall(
-  { secrets: [OWNER_UID] },
-  async (request) => {
-    checkOwner(request);
+// OWNER BOOTSTRAP
+exports.bootstrapOwner = onCall(async (request) => {
+  checkOwner(request);
 
-    const user = await admin.auth().getUser(request.auth.uid);
+  const user = await admin.auth().getUser(request.auth.uid);
 
-    await admin.auth().setCustomUserClaims(request.auth.uid, {
-      ...(user.customClaims || {}),
-      owner: true
-    });
+  await admin.auth().setCustomUserClaims(request.auth.uid, {
+    ...(user.customClaims || {}),
+    owner: true
+  });
 
-    await audit(request.auth.uid, "OWNER_BOOTSTRAP", request.auth.uid);
-    return { success: true };
-  }
-);
+  await audit(
+    request.auth.uid,
+    "OWNER_BOOTSTRAP",
+    request.auth.uid
+  );
 
-exports.ownerListUsers = onCall(
-  { secrets: [OWNER_UID] },
-  async (request) => {
-    checkOwner(request);
+  return { success: true };
+});
 
-    const result = await admin.auth().listUsers(1000);
+// LIST USERS
+exports.ownerListUsers = onCall(async (request) => {
+  checkOwner(request);
 
-    const users = await Promise.all(result.users.map(async (user) => {
-      const snap = await db.collection("users").doc(user.uid).get();
+  const result = await admin.auth().listUsers(1000);
+
+  const users = await Promise.all(
+    result.users.map(async (user) => {
+      const snap = await db.collection("users")
+        .doc(user.uid)
+        .get();
+
       const data = snap.data() || {};
 
       return {
@@ -66,116 +78,129 @@ exports.ownerListUsers = onCall(
         suspended: data.suspended === true,
         suspensionType: data.suspensionType || ""
       };
-    }));
+    })
+  );
 
-    return { users };
-  }
-);
+  return { users };
+});
 
-exports.ownerSetVerified = onCall(
-  { secrets: [OWNER_UID] },
-  async (request) => {
-    checkOwner(request);
+// VERIFY USER
+exports.ownerSetVerified = onCall(async (request) => {
+  checkOwner(request);
 
-    const { uid, verified } = request.data || {};
+  const { uid, verified } = request.data || {};
 
-    if (
-      typeof uid !== "string" ||
-      !uid ||
-      uid === request.auth.uid ||
-      typeof verified !== "boolean"
-    ) {
-      throw new HttpsError("invalid-argument", "Data tidak valid.");
-    }
-
-    await db.collection("users").doc(uid).set({
-      verified,
-      verifiedAt: verified
-        ? admin.firestore.FieldValue.serverTimestamp()
-        : admin.firestore.FieldValue.delete()
-    }, { merge: true });
-
-    await audit(
-      request.auth.uid,
-      verified ? "VERIFY_USER" : "UNVERIFY_USER",
-      uid
+  if (
+    typeof uid !== "string" ||
+    !uid ||
+    uid === request.auth.uid ||
+    typeof verified !== "boolean"
+  ) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Data tidak valid."
     );
-
-    return { success: true };
   }
-);
 
-exports.ownerSuspendUser = onCall(
-  { secrets: [OWNER_UID] },
-  async (request) => {
-    checkOwner(request);
+  await db.collection("users").doc(uid).set({
+    verified,
+    verifiedAt: verified
+      ? admin.firestore.FieldValue.serverTimestamp()
+      : admin.firestore.FieldValue.delete()
+  }, { merge: true });
 
-    const { uid, durationHours } = request.data || {};
+  await audit(
+    request.auth.uid,
+    verified ? "VERIFY_USER" : "UNVERIFY_USER",
+    uid
+  );
 
-    if (
-      typeof uid !== "string" ||
-      !uid ||
-      uid === request.auth.uid
-    ) {
-      throw new HttpsError("invalid-argument", "Target tidak valid.");
-    }
+  return { success: true };
+});
 
-    const temporary =
-      Number.isFinite(durationHours) && durationHours > 0;
+// SUSPEND USER
+exports.ownerSuspendUser = onCall(async (request) => {
+  checkOwner(request);
 
-    const suspendUntil = temporary
-      ? admin.firestore.Timestamp.fromMillis(
-          Date.now() + durationHours * 3600000
-        )
-      : null;
+  const { uid, durationHours } = request.data || {};
 
-    await admin.auth().updateUser(uid, { disabled: true });
-
-    await db.collection("users").doc(uid).set({
-      suspended: true,
-      suspendUntil,
-      suspensionType: temporary ? "temporary" : "permanent",
-      suspendedAt: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
-
-    await audit(
-      request.auth.uid,
-      temporary ? "TEMPORARY_SUSPEND" : "PERMANENT_SUSPEND",
-      uid
+  if (
+    typeof uid !== "string" ||
+    !uid ||
+    uid === request.auth.uid
+  ) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Target tidak valid."
     );
-
-    return { success: true };
   }
-);
 
-exports.ownerUnsuspendUser = onCall(
-  { secrets: [OWNER_UID] },
-  async (request) => {
-    checkOwner(request);
+  const temporary =
+    Number.isFinite(durationHours) && durationHours > 0;
 
-    const { uid } = request.data || {};
+  const suspendUntil = temporary
+    ? admin.firestore.Timestamp.fromMillis(
+        Date.now() + durationHours * 3600000
+      )
+    : null;
 
-    if (
-      typeof uid !== "string" ||
-      !uid ||
-      uid === request.auth.uid
-    ) {
-      throw new HttpsError("invalid-argument", "Target tidak valid.");
-    }
+  await admin.auth().updateUser(uid, {
+    disabled: true
+  });
 
-    await admin.auth().updateUser(uid, { disabled: false });
+  await db.collection("users").doc(uid).set({
+    suspended: true,
+    suspendUntil,
+    suspensionType: temporary ? "temporary" : "permanent",
+    suspendedAt: admin.firestore.FieldValue.serverTimestamp()
+  }, { merge: true });
 
-    await db.collection("users").doc(uid).set({
-      suspended: false,
-      suspendUntil: admin.firestore.FieldValue.delete(),
-      suspensionType: admin.firestore.FieldValue.delete()
-    }, { merge: true });
+  await audit(
+    request.auth.uid,
+    temporary ? "TEMPORARY_SUSPEND" : "PERMANENT_SUSPEND",
+    uid
+  );
 
-    await audit(request.auth.uid, "UNSUSPEND_USER", uid);
-    return { success: true };
+  return { success: true };
+});
+
+// UNSUSPEND USER
+exports.ownerUnsuspendUser = onCall(async (request) => {
+  checkOwner(request);
+
+  const { uid } = request.data || {};
+
+  if (
+    typeof uid !== "string" ||
+    !uid ||
+    uid === request.auth.uid
+  ) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Target tidak valid."
+    );
   }
-);
 
+  await admin.auth().updateUser(uid, {
+    disabled: false
+  });
+
+  await db.collection("users").doc(uid).set({
+    suspended: false,
+    suspendUntil: admin.firestore.FieldValue.delete(),
+    suspensionType: admin.firestore.FieldValue.delete()
+  }, { merge: true });
+
+  await audit(
+    request.auth.uid,
+    "UNSUSPEND_USER",
+    uid
+  );
+
+  return { success: true };
+});
+
+// AUTOMATIC EXPIRED SUSPENSION
 exports.releaseExpiredSuspensions = onSchedule(
   "every 15 minutes",
   async () => {
@@ -187,7 +212,9 @@ exports.releaseExpiredSuspensions = onSchedule(
       .get();
 
     for (const doc of expired.docs) {
-      await admin.auth().updateUser(doc.id, { disabled: false });
+      await admin.auth().updateUser(doc.id, {
+        disabled: false
+      });
 
       await doc.ref.update({
         suspended: false,

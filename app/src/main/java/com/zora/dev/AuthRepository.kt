@@ -11,14 +11,32 @@ class AuthRepository(
     private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
     private val db: FirebaseFirestore = FirebaseFirestore.getInstance()
 ) {
+
     suspend fun login(email: String, password: String) {
-        require(email.isNotBlank()) { "Email wajib diisi." }
-        require(password.isNotBlank()) { "Password wajib diisi." }
+        require(email.isNotBlank()) {
+            "Email wajib diisi."
+        }
+
+        require(password.isNotBlank()) {
+            "Password wajib diisi."
+        }
 
         auth.signInWithEmailAndPassword(
             email.trim(),
             password
         ).await()
+
+        val user = auth.currentUser
+            ?: throw IllegalStateException("Pengguna tidak ditemukan.")
+
+        user.reload().await()
+
+        if (!user.isEmailVerified) {
+            auth.signOut()
+            throw IllegalStateException(
+                "Email belum diverifikasi. Periksa inbox email kamu."
+            )
+        }
     }
 
     suspend fun register(
@@ -26,8 +44,14 @@ class AuthRepository(
         email: String,
         password: String
     ) {
-        require(name.isNotBlank()) { "Nama wajib diisi." }
-        require(email.isNotBlank()) { "Email wajib diisi." }
+        require(name.isNotBlank()) {
+            "Nama wajib diisi."
+        }
+
+        require(email.isNotBlank()) {
+            "Email wajib diisi."
+        }
+
         require(password.length >= 6) {
             "Password minimal 6 karakter."
         }
@@ -40,22 +64,35 @@ class AuthRepository(
         val firebaseUser = result.user
             ?: throw IllegalStateException("Akun gagal dibuat.")
 
-        val profile = userProfileChangeRequest {
-            displayName = name.trim()
+        try {
+            val profile = userProfileChangeRequest {
+                displayName = name.trim()
+            }
+
+            firebaseUser.updateProfile(profile).await()
+
+            db.collection("users")
+                .document(firebaseUser.uid)
+                .set(
+                    mapOf(
+                        "uid" to firebaseUser.uid,
+                        "name" to name.trim(),
+                        "email" to email.trim(),
+                        "verified" to false,
+                        "suspended" to false,
+                        "createdAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+
+            firebaseUser.sendEmailVerification().await()
+
+            auth.signOut()
+        } catch (e: Exception) {
+            throw IllegalStateException(
+                "Akun dibuat, tetapi proses profil atau verifikasi email gagal: ${e.localizedMessage}",
+                e
+            )
         }
-
-        firebaseUser.updateProfile(profile).await()
-
-        db.collection("users")
-            .document(firebaseUser.uid)
-            .set(
-                mapOf(
-                    "uid" to firebaseUser.uid,
-                    "name" to name.trim(),
-                    "email" to email.trim(),
-                    "createdAt" to FieldValue.serverTimestamp()
-                )
-            ).await()
     }
 
     suspend fun resetPassword(email: String) {
@@ -63,7 +100,9 @@ class AuthRepository(
             "Masukkan email terlebih dahulu."
         }
 
-        auth.sendPasswordResetEmail(email.trim()).await()
+        auth.sendPasswordResetEmail(
+            email.trim()
+        ).await()
     }
 
     fun logout() {

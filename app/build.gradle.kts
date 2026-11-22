@@ -14,8 +14,9 @@ android {
         applicationId = "com.zora.dev"
         minSdk = 23
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+
+        versionCode = 4
+        versionName = "1.3.1"
     }
 
     buildFeatures {
@@ -49,6 +50,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
 
     implementation(platform("com.google.firebase:firebase-bom:34.5.0"))
+
     implementation("com.google.firebase:firebase-auth")
     implementation("com.google.firebase:firebase-firestore")
     implementation("com.google.firebase:firebase-database")

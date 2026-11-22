@@ -1,7 +1,7 @@
+
 package com.zora.dev
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -13,31 +13,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 
 private val OwnerBg = Color(0xFFFFF9E9)
 private val OwnerYellow = Color(0xFFFFD94D)
 private val OwnerInk = Color(0xFF171717)
 private val OwnerMuted = Color(0xFF77736B)
 
-private data class OwnerUser(
-    val uid: String,
-    val name: String,
-    val email: String,
-    val disabled: Boolean,
-    val verified: Boolean,
-    val suspended: Boolean,
-    val suspensionType: String
-)
-
 @Composable
 fun OwnerScreen(onBack: () -> Unit = {}) {
-    val functions = remember { FirebaseFunctions.getInstance() }
+    val repository = remember { OwnerRepository() }
     val scope = rememberCoroutineScope()
 
-    var users by remember { mutableStateOf<List<OwnerUser>>(emptyList()) }
+    var users by remember {
+        mutableStateOf<List<OwnerUser>>(emptyList())
+    }
+
     var loading by remember { mutableStateOf(true) }
     var busyUid by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf("") }
@@ -45,79 +36,60 @@ fun OwnerScreen(onBack: () -> Unit = {}) {
     var search by remember { mutableStateOf("") }
     var refreshKey by remember { mutableIntStateOf(0) }
 
-    suspend fun loadUsers() {
+    LaunchedEffect(refreshKey) {
         loading = true
         error = ""
+
         try {
-            val result = functions
-                .getHttpsCallable("ownerListUsers")
-                .call()
-                .await()
-
-            val data = result.data as? Map<*, *>
-            val list = data?.get("users") as? List<*> ?: emptyList<Any>()
-
-            users = list.mapNotNull { item ->
-                val map = item as? Map<*, *> ?: return@mapNotNull null
-                OwnerUser(
-                    uid = map["uid"] as? String ?: return@mapNotNull null,
-                    name = map["name"] as? String ?: "",
-                    email = map["email"] as? String ?: "",
-                    disabled = map["disabled"] as? Boolean ?: false,
-                    verified = map["verified"] as? Boolean ?: false,
-                    suspended = map["suspended"] as? Boolean ?: false,
-                    suspensionType = map["suspensionType"] as? String ?: ""
-                )
-            }
+            users = repository.getUsers()
         } catch (e: Exception) {
-            error = e.message ?: "Gagal memuat pengguna."
+            error = e.localizedMessage ?: "Gagal memuat pengguna."
         } finally {
             loading = false
         }
     }
 
-    LaunchedEffect(refreshKey) {
-        loadUsers()
-    }
-
-    fun runAction(uid: String, action: String, verified: Boolean = false) {
+    fun runAction(
+        uid: String,
+        action: String,
+        verified: Boolean = false
+    ) {
         scope.launch {
             busyUid = uid
             error = ""
             message = ""
+
             try {
                 when (action) {
                     "verify" -> {
-                        functions.getHttpsCallable("ownerSetVerified")
-                            .call(mapOf("uid" to uid, "verified" to verified))
-                            .await()
-                        message = if (verified) "Akun berhasil diverifikasi." else "Verifikasi akun dicabut."
+                        repository.setVerified(uid, verified)
+
+                        message = if (verified) {
+                            "Akun berhasil diverifikasi."
+                        } else {
+                            "Verifikasi akun dicabut."
+                        }
                     }
 
                     "suspend" -> {
-                        functions.getHttpsCallable("ownerSuspendUser")
-                            .call(mapOf("uid" to uid))
-                            .await()
+                        repository.suspendUser(uid, null)
                         message = "Akun berhasil di-suspend."
                     }
 
                     "temporary" -> {
-                        functions.getHttpsCallable("ownerSuspendUser")
-                            .call(mapOf("uid" to uid, "durationHours" to 24))
-                            .await()
+                        repository.suspendUser(uid, 24)
                         message = "Akun di-suspend selama 24 jam."
                     }
 
                     "unsuspend" -> {
-                        functions.getHttpsCallable("ownerUnsuspendUser")
-                            .call(mapOf("uid" to uid))
-                            .await()
+                        repository.unsuspendUser(uid)
                         message = "Akun berhasil dipulihkan."
                     }
                 }
+
                 refreshKey++
             } catch (e: Exception) {
-                error = e.message ?: "Aksi gagal dijalankan."
+                error = e.localizedMessage ?: "Aksi gagal dijalankan."
             } finally {
                 busyUid = null
             }
@@ -142,9 +114,19 @@ fun OwnerScreen(onBack: () -> Unit = {}) {
             TextButton(onClick = onBack) {
                 Text("KEMBALI", color = OwnerInk)
             }
+
             Spacer(Modifier.weight(1f))
-            TextButton(onClick = { refreshKey++ }) {
-                Text("REFRESH", color = OwnerInk, fontWeight = FontWeight.Bold)
+
+            TextButton(
+                onClick = {
+                    refreshKey++
+                }
+            ) {
+                Text(
+                    "REFRESH",
+                    color = OwnerInk,
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
 
@@ -154,6 +136,7 @@ fun OwnerScreen(onBack: () -> Unit = {}) {
             fontWeight = FontWeight.Black,
             color = OwnerInk
         )
+
         Text(
             "ZORA MASSAGE / ADMINISTRATION",
             color = OwnerMuted,
@@ -162,10 +145,27 @@ fun OwnerScreen(onBack: () -> Unit = {}) {
 
         Spacer(Modifier.height(18.dp))
 
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            OwnerStat("TOTAL USER", users.size.toString(), Modifier.weight(1f))
-            OwnerStat("VERIFIED", users.count { it.verified }.toString(), Modifier.weight(1f))
-            OwnerStat("SUSPENDED", users.count { it.suspended || it.disabled }.toString(), Modifier.weight(1f))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            OwnerStat(
+                "TOTAL USER",
+                users.size.toString(),
+                Modifier.weight(1f)
+            )
+
+            OwnerStat(
+                "VERIFIED",
+                users.count { it.verified }.toString(),
+                Modifier.weight(1f)
+            )
+
+            OwnerStat(
+                "SUSPENDED",
+                users.count { it.suspended || it.disabled }.toString(),
+                Modifier.weight(1f)
+            )
         }
 
         Spacer(Modifier.height(18.dp))
@@ -190,21 +190,37 @@ fun OwnerScreen(onBack: () -> Unit = {}) {
 
         if (error.isNotBlank()) {
             Spacer(Modifier.height(8.dp))
-            Text(error, color = MaterialTheme.colorScheme.error)
+            Text(
+                error,
+                color = MaterialTheme.colorScheme.error
+            )
         }
 
         Spacer(Modifier.height(12.dp))
 
         when {
             loading -> {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
                     CircularProgressIndicator(color = OwnerInk)
                 }
             }
 
             filteredUsers.isEmpty() -> {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("Tidak ada pengguna ditemukan.", color = OwnerMuted)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "Tidak ada pengguna ditemukan.",
+                        color = OwnerMuted
+                    )
                 }
             }
 
@@ -214,13 +230,17 @@ fun OwnerScreen(onBack: () -> Unit = {}) {
                     color = OwnerInk,
                     fontWeight = FontWeight.Bold
                 )
+
                 Spacer(Modifier.height(8.dp))
 
                 LazyColumn(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(filteredUsers, key = { it.uid }) { user ->
+                    items(
+                        items = filteredUsers,
+                        key = { it.uid }
+                    ) { user ->
                         OwnerUserCard(
                             user = user,
                             busy = busyUid == user.uid,
@@ -256,11 +276,21 @@ private fun OwnerStat(
     Card(
         modifier = modifier,
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White)
+        colors = CardDefaults.cardColors(
+            containerColor = Color.White
+        )
     ) {
-        Column(Modifier.padding(12.dp)) {
-            Text(title, color = OwnerMuted, style = MaterialTheme.typography.labelSmall)
+        Column(
+            modifier = Modifier.padding(12.dp)
+        ) {
+            Text(
+                title,
+                color = OwnerMuted,
+                style = MaterialTheme.typography.labelSmall
+            )
+
             Spacer(Modifier.height(5.dp))
+
             Text(
                 value,
                 color = OwnerInk,
@@ -284,27 +314,45 @@ private fun OwnerUserCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White)
+        colors = CardDefaults.cardColors(
+            containerColor = Color.White
+        )
     ) {
-        Column(Modifier.padding(15.dp)) {
+        Column(
+            modifier = Modifier.padding(15.dp)
+        ) {
             Text(
                 user.name.ifBlank { "Tanpa nama" },
                 color = OwnerInk,
                 fontWeight = FontWeight.Bold,
                 style = MaterialTheme.typography.titleMedium
             )
-            Text(user.email, color = OwnerMuted, style = MaterialTheme.typography.bodySmall)
+
+            Text(
+                user.email,
+                color = OwnerMuted,
+                style = MaterialTheme.typography.bodySmall
+            )
 
             Spacer(Modifier.height(8.dp))
 
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 OwnerTag(
-                    if (user.verified) "TERVERIFIKASI" else "BELUM VERIFIED",
-                    if (user.verified) Color(0xFFE0F2E5) else Color(0xFFF0EEE8)
+                    if (user.verified) "TERVERIFIKASI"
+                    else "BELUM VERIFIED",
+                    if (user.verified) Color(0xFFE0F2E5)
+                    else Color(0xFFF0EEE8)
                 )
+
                 OwnerTag(
-                    if (user.suspended || user.disabled) "SUSPENDED" else "AKTIF",
-                    if (user.suspended || user.disabled) Color(0xFFFFE2DF) else Color(0xFFE0F2E5)
+                    if (user.suspended || user.disabled)
+                        "SUSPENDED"
+                    else "AKTIF",
+                    if (user.suspended || user.disabled)
+                        Color(0xFFFFE2DF)
+                    else Color(0xFFE0F2E5)
                 )
             }
 
@@ -324,28 +372,23 @@ private fun OwnerUserCard(
                     color = OwnerInk
                 )
             } else {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    if (user.verified) {
-                        OutlinedButton(
-                            onClick = onUnverify,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Cabut centang")
-                        }
-                    } else {
-                        Button(
-                            onClick = onVerify,
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = OwnerYellow,
-                                contentColor = OwnerInk
-                            )
-                        ) {
-                            Text("Verifikasi")
-                        }
+                if (user.verified) {
+                    OutlinedButton(
+                        onClick = onUnverify,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Cabut centang")
+                    }
+                } else {
+                    Button(
+                        onClick = onVerify,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = OwnerYellow,
+                            contentColor = OwnerInk
+                        )
+                    ) {
+                        Text("Verifikasi")
                     }
                 }
 
@@ -362,13 +405,17 @@ private fun OwnerUserCard(
                         Text("Pulihkan akun")
                     }
                 } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         OutlinedButton(
                             onClick = onTemporarySuspend,
                             modifier = Modifier.weight(1f)
                         ) {
                             Text("Suspend 24 jam")
                         }
+
                         Button(
                             onClick = onSuspend,
                             modifier = Modifier.weight(1f),
@@ -386,14 +433,20 @@ private fun OwnerUserCard(
 }
 
 @Composable
-private fun OwnerTag(text: String, color: Color) {
+private fun OwnerTag(
+    text: String,
+    color: Color
+) {
     Surface(
         color = color,
         shape = RoundedCornerShape(50)
     ) {
         Text(
             text,
-            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+            modifier = Modifier.padding(
+                horizontal = 9.dp,
+                vertical = 5.dp
+            ),
             color = OwnerInk,
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold

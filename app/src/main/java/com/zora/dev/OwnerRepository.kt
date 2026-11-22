@@ -19,20 +19,13 @@ class OwnerRepository(
         FirebaseFunctions.getInstance()
 ) {
 
-    suspend fun bootstrapOwner() {
-        functions
-            .getHttpsCallable("bootstrapOwner")
-            .call()
-            .await()
-    }
-
     suspend fun getUsers(): List<OwnerUser> {
         val result = functions
             .getHttpsCallable("ownerListUsers")
             .call()
             .await()
 
-        val data = result.data as? Map<*, *>
+        val data = result.getData() as? Map<*, *>
             ?: return emptyList()
 
         val users = data["users"] as? List<*>

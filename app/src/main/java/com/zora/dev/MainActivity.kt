@@ -34,13 +34,17 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun ZoraApp() {
     val auth = remember { FirebaseAuth.getInstance() }
-    var currentUser by remember { mutableStateOf(auth.currentUser) }
+    var currentUser by remember {
+        mutableStateOf(auth.currentUser)
+    }
 
     DisposableEffect(auth) {
         val listener = FirebaseAuth.AuthStateListener {
             currentUser = it.currentUser
         }
+
         auth.addAuthStateListener(listener)
+
         onDispose {
             auth.removeAuthStateListener(listener)
         }
@@ -110,6 +114,7 @@ fun AuthScreen() {
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
+
             Spacer(Modifier.height(12.dp))
         }
 
@@ -164,6 +169,7 @@ fun AuthScreen() {
                                     "Nama wajib diisi."
                                 )
                             }
+
                             repository.register(name, email, password)
                         } else {
                             repository.login(email, password)
@@ -183,8 +189,7 @@ fun AuthScreen() {
         ) {
             if (loading) {
                 CircularProgressIndicator(
-                    modifier = Modifier.size(22.dp),
-                    color = ZoraInk
+                    modifier = Modifier.size(22.dp)
                 )
             } else {
                 Text(if (isRegister) "DAFTAR AKUN" else "MASUK")
@@ -214,6 +219,7 @@ fun AuthScreen() {
                                     "Masukkan email terlebih dahulu."
                                 )
                             }
+
                             repository.resetPassword(email)
                             message = "Email reset password telah dikirim."
                         } catch (e: Exception) {
@@ -235,33 +241,43 @@ fun AuthScreen() {
 fun MainDashboard(onLogout: () -> Unit) {
     val user = FirebaseAuth.getInstance().currentUser
     val ownerRepository = remember { OwnerRepository() }
+    val scope = rememberCoroutineScope()
 
     var selectedTab by remember { mutableStateOf("Chat") }
     var isOwner by remember { mutableStateOf(false) }
     var ownerChecked by remember { mutableStateOf(false) }
     var ownerError by remember { mutableStateOf("") }
+    var checkingOwner by remember { mutableStateOf(false) }
+
+    suspend fun checkOwnerAccess() {
+        if (user == null || checkingOwner) return
+
+        checkingOwner = true
+        ownerError = ""
+
+        try {
+            ownerRepository.bootstrapOwner()
+
+            val token = user.getIdToken(true).await()
+            isOwner = token.claims["owner"] == true
+
+            if (!isOwner) {
+                ownerError = "Akun belum memiliki akses Owner."
+            }
+        } catch (e: Exception) {
+            isOwner = false
+            ownerError = e.localizedMessage
+                ?: "Pengecekan Owner gagal."
+        } finally {
+            checkingOwner = false
+            ownerChecked = true
+        }
+    }
 
     LaunchedEffect(user?.uid) {
         isOwner = false
         ownerChecked = false
-        ownerError = ""
-
-        if (user != null) {
-            try {
-                // Memastikan klaim owner sudah dipasang oleh backend.
-                ownerRepository.bootstrapOwner()
-
-                // Memaksa Firebase mengambil token terbaru.
-                val token = user.getIdToken(true).await()
-                isOwner = token.claims["owner"] == true
-            } catch (e: Exception) {
-                isOwner = false
-                ownerError = e.localizedMessage
-                    ?: "Pengecekan Owner gagal."
-            } finally {
-                ownerChecked = true
-            }
-        }
+        checkOwnerAccess()
     }
 
     val tabs = buildList {
@@ -271,10 +287,6 @@ fun MainDashboard(onLogout: () -> Unit) {
         add("Panggilan")
         add("Profil")
         if (isOwner) add("Owner")
-    }
-
-    if (selectedTab !in tabs) {
-        selectedTab = "Chat"
     }
 
     val icons = listOf(
@@ -345,32 +357,69 @@ fun MainDashboard(onLogout: () -> Unit) {
             }
         }
     ) { padding ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            when (selectedTab) {
-                "Chat" -> ChatScreen()
-                "Status" -> StatusScreen()
-                "Grup" -> GroupScreen()
-                "Panggilan" -> CallScreen()
-                "Profil" -> ProfileScreen(onLogout)
-                "Owner" -> {
-                    if (isOwner) {
-                        OwnerScreen(
-                            onBack = {
-                                selectedTab = "Chat"
-                            }
+            if (!ownerChecked || checkingOwner) {
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            if (ownerError.isNotBlank()) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp)
+                    ) {
+                        Text(
+                            "Pemeriksaan Owner",
+                            style = MaterialTheme.typography.titleMedium
                         )
-                    } else {
-                        Text("Akses ditolak.")
+
+                        Text(ownerError)
+
+                        TextButton(
+                            onClick = {
+                                scope.launch {
+                                    ownerChecked = false
+                                    checkOwnerAccess()
+                                }
+                            },
+                            enabled = !checkingOwner
+                        ) {
+                            Text("Coba lagi")
+                        }
                     }
                 }
             }
 
-            if (!ownerChecked && user != null) {
-                // Menu Owner ditampilkan setelah pemeriksaan selesai.
+            Box(
+                modifier = Modifier.weight(1f)
+            ) {
+                when (selectedTab) {
+                    "Chat" -> ChatScreen()
+                    "Status" -> StatusScreen()
+                    "Grup" -> GroupScreen()
+                    "Panggilan" -> CallScreen()
+                    "Profil" -> ProfileScreen(onLogout)
+                    "Owner" -> {
+                        if (isOwner) {
+                            OwnerScreen(
+                                onBack = {
+                                    selectedTab = "Chat"
+                                }
+                            )
+                        } else {
+                            Text("Akses ditolak.")
+                        }
+                    }
+                }
             }
         }
     }

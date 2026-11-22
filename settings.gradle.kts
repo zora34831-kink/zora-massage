@@ -15,5 +15,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ZoraMassage"
+rootProject.name = "ZORA MASSAGE"
+
 include(":app")
+include(":admin-app")

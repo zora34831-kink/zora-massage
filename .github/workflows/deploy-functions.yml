@@ -31,11 +31,48 @@ jobs:
         working-directory: functions
         run: npm install
 
-      - name: Deploy Firebase Functions
+      - name: Configure Firebase Credentials
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
           echo "$FIREBASE_SERVICE_ACCOUNT" > "$RUNNER_TEMP/service-account.json"
-          export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/service-account.json"
-          firebase deploy --only functions --project zora-massage --non-interactive
-          
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/service-account.json" >> "$GITHUB_ENV"
+
+      - name: Set Owner Custom Claim
+        env:
+          ZORA_OWNER_UID: ${{ secrets.ZORA_OWNER_UID }}
+        run: |
+          node <<'NODE'
+          const admin = require("./functions/node_modules/firebase-admin");
+
+          async function main() {
+            const uid = process.env.ZORA_OWNER_UID;
+
+            if (!uid) {
+              throw new Error("ZORA_OWNER_UID belum diatur.");
+            }
+
+            admin.initializeApp({
+              credential: admin.credential.applicationDefault()
+            });
+
+            const user = await admin.auth().getUser(uid);
+
+            await admin.auth().setCustomUserClaims(uid, {
+              ...(user.customClaims || {}),
+              owner: true
+            });
+
+            console.log("Owner custom claim berhasil diatur.");
+            await admin.app().delete();
+          }
+
+          main().catch(error => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
+
+      - name: Deploy Firebase Functions
+        run: firebase deploy --only functions --project zora-massage --non-interactive
+        

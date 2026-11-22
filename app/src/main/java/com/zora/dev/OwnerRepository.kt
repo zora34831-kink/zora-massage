@@ -18,6 +18,7 @@ class OwnerRepository(
     private val functions: FirebaseFunctions =
         FirebaseFunctions.getInstance()
 ) {
+
     suspend fun bootstrapOwner() {
         functions
             .getHttpsCallable("bootstrapOwner")
@@ -38,7 +39,8 @@ class OwnerRepository(
             ?: return emptyList()
 
         return users.mapNotNull { item ->
-            val user = item as? Map<*, *> ?: return@mapNotNull null
+            val user = item as? Map<*, *>
+                ?: return@mapNotNull null
 
             OwnerUser(
                 uid = user["uid"] as? String ?: "",
@@ -53,29 +55,42 @@ class OwnerRepository(
         }
     }
 
-    suspend fun setVerified(uid: String, verified: Boolean) {
-        functions.getHttpsCallable("ownerSetVerified")
+    suspend fun setVerified(
+        uid: String,
+        verified: Boolean
+    ) {
+        functions
+            .getHttpsCallable("ownerSetVerified")
             .call(
                 mapOf(
                     "uid" to uid,
                     "verified" to verified
                 )
-            ).await()
+            )
+            .await()
     }
 
-    suspend fun suspendUser(uid: String, durationHours: Int?) {
-        functions.getHttpsCallable("ownerSuspendUser")
+    suspend fun suspendUser(
+        uid: String,
+        durationHours: Int?
+    ) {
+        functions
+            .getHttpsCallable("ownerSuspendUser")
             .call(
                 mapOf(
                     "uid" to uid,
                     "durationHours" to durationHours
                 )
-            ).await()
+            )
+            .await()
     }
 
     suspend fun unsuspendUser(uid: String) {
-        functions.getHttpsCallable("ownerUnsuspendUser")
-            .call(mapOf("uid" to uid))
+        functions
+            .getHttpsCallable("ownerUnsuspendUser")
+            .call(
+                mapOf("uid" to uid)
+            )
             .await()
     }
 }

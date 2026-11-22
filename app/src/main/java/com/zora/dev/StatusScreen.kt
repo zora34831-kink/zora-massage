@@ -9,7 +9,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
@@ -23,34 +23,44 @@ data class ZoraStatus(
 @Composable
 fun StatusScreen() {
     val database = remember {
-        FirebaseDatabase.getInstance().reference
+        FirebaseFirestore.getInstance()
     }
-    val auth = FirebaseAuth.getInstance()
+
+    val auth = remember {
+        FirebaseAuth.getInstance()
+    }
+
     val scope = rememberCoroutineScope()
 
     var statusText by remember { mutableStateOf("") }
-    var statuses by remember { mutableStateOf<List<ZoraStatus>>(emptyList()) }
+    var statuses by remember {
+        mutableStateOf<List<ZoraStatus>>(emptyList())
+    }
     var message by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        database.child("status").get()
-            .addOnSuccessListener { snapshot ->
-                val result = snapshot.children.mapNotNull { item ->
-                    val text = item.child("text").getValue(String::class.java)
-                        ?: return@mapNotNull null
+    suspend fun loadStatuses() {
+        val snapshot = database.collection("statuses")
+            .orderBy("createdAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
+            .get()
+            .await()
 
-                    ZoraStatus(
-                        uid = item.key ?: "",
-                        name = item.child("name").getValue(String::class.java)
-                            ?: "Pengguna ZORA",
-                        text = text,
-                        createdAt = item.child("createdAt")
-                            .getValue(Long::class.java) ?: 0L
-                    )
-                }
-                statuses = result.sortedByDescending { it.createdAt }
-            }
+        statuses = snapshot.documents.map { document ->
+            ZoraStatus(
+                uid = document.getString("uid") ?: "",
+                name = document.getString("name") ?: "Pengguna ZORA",
+                text = document.getString("text") ?: "",
+                createdAt = document.getLong("createdAt") ?: 0L
+            )
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        try {
+            loadStatuses()
+        } catch (e: Exception) {
+            message = e.message ?: "Gagal memuat status."
+        }
     }
 
     Column(
@@ -58,8 +68,15 @@ fun StatusScreen() {
             .fillMaxSize()
             .padding(16.dp)
     ) {
-        Text("Status", style = MaterialTheme.typography.headlineMedium)
-        Text("Bagikan kabar singkat.", color = ZoraMuted)
+        Text(
+            text = "Status",
+            style = MaterialTheme.typography.headlineMedium
+        )
+
+        Text(
+            text = "Bagikan kabar singkat.",
+            color = ZoraMuted
+        )
 
         Spacer(Modifier.height(16.dp))
 
@@ -67,7 +84,9 @@ fun StatusScreen() {
             value = statusText,
             onValueChange = { statusText = it },
             modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("Apa yang sedang kamu pikirkan?") },
+            placeholder = {
+                Text("Apa yang sedang kamu pikirkan?")
+            },
             maxLines = 4
         )
 
@@ -76,49 +95,53 @@ fun StatusScreen() {
         Button(
             enabled = statusText.isNotBlank() && !loading,
             onClick = {
-                val user = auth.currentUser ?: return@Button
+                val user = auth.currentUser
+
+                if (user == null) {
+                    message = "Silakan login terlebih dahulu."
+                    return@Button
+                }
+
                 loading = true
+
                 scope.launch {
                     try {
-                        database.child("status")
-                            .child(user.uid)
-                            .setValue(
-                                mapOf(
-                                    "name" to (user.displayName ?: "Pengguna ZORA"),
-                                    "text" to statusText.trim(),
-                                    "createdAt" to System.currentTimeMillis()
-                                )
-                            ).await()
+                        val data = hashMapOf(
+                            "uid" to user.uid,
+                            "name" to (
+                                user.displayName
+                                    ?: user.email
+                                    ?: "Pengguna ZORA"
+                            ),
+                            "text" to statusText.trim(),
+                            "createdAt" to System.currentTimeMillis()
+                        )
+
+                        database.collection("statuses")
+                            .add(data)
+                            .await()
 
                         statusText = ""
                         message = "Status berhasil dibagikan."
-                        val snapshot = database.child("status").get().await()
-                        statuses = snapshot.children.mapNotNull { item ->
-                            val text = item.child("text")
-                                .getValue(String::class.java)
-                                ?: return@mapNotNull null
 
-                            ZoraStatus(
-                                uid = item.key ?: "",
-                                name = item.child("name")
-                                    .getValue(String::class.java) ?: "Pengguna ZORA",
-                                text = text,
-                                createdAt = item.child("createdAt")
-                                    .getValue(Long::class.java) ?: 0L
-                            )
-                        }.sortedByDescending { it.createdAt }
+                        loadStatuses()
                     } catch (e: Exception) {
-                        message = e.message ?: "Gagal membagikan status."
+                        message = e.message
+                            ?: "Gagal membagikan status."
                     } finally {
                         loading = false
                     }
                 }
             }
         ) {
-            Text(if (loading) "Mengirim..." else "Bagikan status")
+            Text(
+                if (loading) "Mengirim..."
+                else "Bagikan status"
+            )
         }
 
         if (message.isNotBlank()) {
+            Spacer(Modifier.height(8.dp))
             Text(message, color = ZoraMuted)
         }
 
@@ -126,19 +149,31 @@ fun StatusScreen() {
         HorizontalDivider()
         Spacer(Modifier.height(12.dp))
 
-        Text("Status terbaru", style = MaterialTheme.typography.titleMedium)
+        Text(
+            text = "Status terbaru",
+            style = MaterialTheme.typography.titleMedium
+        )
 
         LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             items(statuses) { status ->
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(14.dp)) {
+                Card(
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp)
+                    ) {
                         Text(
-                            status.name,
+                            text = status.name,
                             style = MaterialTheme.typography.titleSmall
                         )
+
                         Spacer(Modifier.height(6.dp))
+
                         Text(status.text)
                     }
                 }

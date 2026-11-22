@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 @Composable
@@ -31,13 +32,9 @@ fun ChatScreen() {
         mutableStateOf<List<ZoraUser>>(emptyList())
     }
 
-    var loading by remember {
-        mutableStateOf(true)
-    }
-
-    var error by remember {
-        mutableStateOf("")
-    }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf("") }
+    var reloadKey by remember { mutableStateOf(0) }
 
     var selectedConversation by remember {
         mutableStateOf<String?>(null)
@@ -47,13 +44,18 @@ fun ChatScreen() {
         mutableStateOf<ZoraUser?>(null)
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(reloadKey) {
+        loading = true
+        error = ""
+
         try {
             repository.observeUsers().collect { result ->
                 users = result
                 loading = false
                 error = ""
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             loading = false
             error = e.localizedMessage ?: "Gagal memuat pengguna."
@@ -101,7 +103,7 @@ fun ChatScreen() {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                "PENGGUNA",
+                text = "PENGGUNA",
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
                 color = ZoraMuted
@@ -109,20 +111,8 @@ fun ChatScreen() {
 
             IconButton(
                 onClick = {
-                    loading = true
-                    error = ""
-                    scope.launch {
-                        try {
-                            repository.observeUsers().collect {
-                                users = it
-                                loading = false
-                            }
-                        } catch (e: Exception) {
-                            loading = false
-                            error = e.localizedMessage
-                                ?: "Gagal memuat pengguna."
-                        }
-                    }
+                    users = emptyList()
+                    reloadKey++
                 }
             ) {
                 Icon(
@@ -134,125 +124,145 @@ fun ChatScreen() {
 
         Spacer(Modifier.height(8.dp))
 
-        if (loading && users.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator(color = ZoraInk)
+        when {
+            loading && users.isEmpty() -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(color = ZoraInk)
+                }
             }
-        } else if (error.isNotBlank() && users.isEmpty()) {
-            EmptyChatState(
-                title = "Tidak dapat memuat pengguna",
-                description = error,
-                onRetry = {
-                    loading = true
-                    error = ""
-                }
-            )
-        } else if (users.isEmpty()) {
-            EmptyChatState(
-                title = "Belum ada pengguna",
-                description = "Pengguna ZORA lainnya akan muncul di sini.",
-                onRetry = {
-                    loading = true
-                }
-            )
-        } else {
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                items(
-                    items = users,
-                    key = { it.uid }
-                ) { person ->
 
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                scope.launch {
-                                    try {
-                                        error = ""
-                                        val id = repository
-                                            .startConversation(person.uid)
+            error.isNotBlank() && users.isEmpty() -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    EmptyChatState(
+                        title = "Tidak dapat memuat pengguna",
+                        description = error,
+                        onRetry = {
+                            reloadKey++
+                        }
+                    )
+                }
+            }
 
-                                        selectedUser = person
-                                        selectedConversation = id
-                                    } catch (e: Exception) {
-                                        error = e.localizedMessage
-                                            ?: "Gagal membuka percakapan."
+            users.isEmpty() -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    EmptyChatState(
+                        title = "Belum ada pengguna",
+                        description = "Pengguna ZORA lainnya akan muncul di sini.",
+                        onRetry = {
+                            reloadKey++
+                        }
+                    )
+                }
+            }
+
+            else -> {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(
+                        items = users,
+                        key = { it.uid }
+                    ) { person ->
+
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    scope.launch {
+                                        try {
+                                            error = ""
+
+                                            val id = repository
+                                                .startConversation(person.uid)
+
+                                            selectedUser = person
+                                            selectedConversation = id
+                                        } catch (e: Exception) {
+                                            error = e.localizedMessage
+                                                ?: "Gagal membuka percakapan."
+                                        }
                                     }
-                                }
-                            },
-                        shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = ZoraWhite
-                        )
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(15.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                                },
+                            shape = RoundedCornerShape(18.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = ZoraWhite
+                            )
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .background(
-                                        ZoraYellow,
-                                        CircleShape
-                                    ),
-                                contentAlignment = Alignment.Center
+                            Row(
+                                modifier = Modifier.padding(15.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    text = person.name
-                                        .firstOrNull()
-                                        ?.uppercase() ?: "Z",
-                                    fontWeight = FontWeight.Bold,
-                                    color = ZoraInk
-                                )
-                            }
-
-                            Spacer(Modifier.width(13.dp))
-
-                            Column(
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Row(
-                                    verticalAlignment =
-                                        Alignment.CenterVertically
+                                Box(
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .background(
+                                            ZoraYellow,
+                                            CircleShape
+                                        ),
+                                    contentAlignment = Alignment.Center
                                 ) {
                                     Text(
-                                        person.name,
+                                        text = person.name
+                                            .firstOrNull()
+                                            ?.uppercase() ?: "Z",
                                         fontWeight = FontWeight.Bold,
                                         color = ZoraInk
                                     )
+                                }
 
-                                    if (person.verified) {
-                                        Spacer(Modifier.width(5.dp))
+                                Spacer(Modifier.width(13.dp))
+
+                                Column(
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
                                         Text(
-                                            "✓",
-                                            color = MaterialTheme
-                                                .colorScheme.primary,
-                                            fontWeight = FontWeight.Bold
+                                            text = person.name,
+                                            fontWeight = FontWeight.Bold,
+                                            color = ZoraInk
                                         )
+
+                                        if (person.verified) {
+                                            Spacer(Modifier.width(5.dp))
+                                            Text(
+                                                text = "✓",
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
                                     }
+
+                                    Text(
+                                        text = person.email,
+                                        color = ZoraMuted,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
                                 }
 
                                 Text(
-                                    person.email,
-                                    color = ZoraMuted,
-                                    style = MaterialTheme.typography.bodySmall
+                                    text = "›",
+                                    style = MaterialTheme.typography.headlineMedium,
+                                    color = ZoraMuted
                                 )
                             }
-
-                            Text(
-                                "›",
-                                style = MaterialTheme.typography.headlineMedium,
-                                color = ZoraMuted
-                            )
                         }
                     }
                 }
@@ -261,7 +271,7 @@ fun ChatScreen() {
 
         if (error.isNotBlank() && users.isNotEmpty()) {
             Text(
-                error,
+                text = error,
                 color = MaterialTheme.colorScheme.error,
                 modifier = Modifier.padding(8.dp)
             )
@@ -278,20 +288,21 @@ private fun EmptyChatState(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .weight(1f),
+            .padding(20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            title,
+            text = title,
             style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.Bold,
+            color = ZoraInk
         )
 
         Spacer(Modifier.height(8.dp))
 
         Text(
-            description,
+            text = description,
             color = ZoraMuted
         )
 
@@ -311,6 +322,7 @@ private fun ConversationScreen(
     onBack: () -> Unit
 ) {
     val repository = remember { ChatRepository() }
+
     val currentUid = FirebaseAuth.getInstance()
         .currentUser?.uid.orEmpty()
 
@@ -321,33 +333,26 @@ private fun ConversationScreen(
         mutableStateOf<List<ZoraMessage>>(emptyList())
     }
 
-    var input by remember {
-        mutableStateOf("")
-    }
-
-    var error by remember {
-        mutableStateOf("")
-    }
-
-    var loading by remember {
-        mutableStateOf(true)
-    }
-
-    var sending by remember {
-        mutableStateOf(false)
-    }
+    var input by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(true) }
+    var sending by remember { mutableStateOf(false) }
 
     LaunchedEffect(conversationId) {
+        loading = true
+        error = ""
+
         try {
             repository.observeMessages(conversationId).collect {
                 messages = it
                 loading = false
                 error = ""
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             loading = false
-            error = e.localizedMessage
-                ?: "Gagal memuat pesan."
+            error = e.localizedMessage ?: "Gagal memuat pesan."
         }
     }
 
@@ -381,7 +386,7 @@ private fun ConversationScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        title,
+                        text = title,
                         fontWeight = FontWeight.Bold,
                         color = ZoraInk
                     )
@@ -389,14 +394,14 @@ private fun ConversationScreen(
                     if (verified) {
                         Spacer(Modifier.width(5.dp))
                         Text(
-                            "✓",
+                            text = "✓",
                             color = MaterialTheme.colorScheme.primary
                         )
                     }
                 }
 
                 Text(
-                    "Percakapan pribadi",
+                    text = "Percakapan pribadi",
                     color = ZoraMuted,
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -408,8 +413,8 @@ private fun ConversationScreen(
         if (loading && messages.isEmpty()) {
             Box(
                 modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .weight(1f),
                 contentAlignment = Alignment.Center
             ) {
                 CircularProgressIndicator(color = ZoraInk)
@@ -439,11 +444,7 @@ private fun ConversationScreen(
                         }
                     ) {
                         Surface(
-                            color = if (mine) {
-                                ZoraYellow
-                            } else {
-                                ZoraWhite
-                            },
+                            color = if (mine) ZoraYellow else ZoraWhite,
                             shape = RoundedCornerShape(
                                 topStart = 17.dp,
                                 topEnd = 17.dp,
